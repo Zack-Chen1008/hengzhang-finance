@@ -71,6 +71,12 @@ export async function ensureDatabase() {
   await env.DB.batch(schemaStatements.map((sql) => env.DB.prepare(sql)));
   await env.DB.prepare("INSERT OR IGNORE INTO company_settings (id,company_name,updated_at) VALUES (1,'abc',?)")
     .bind(new Date().toISOString()).run();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE transactions SET status = '待部门审批' WHERE status = '审批中'"),
+    env.DB.prepare("UPDATE transactions SET status = '待财务确认' WHERE status = '待确认'"),
+    env.DB.prepare("UPDATE transactions SET status = '待出纳付款' WHERE status = '待付款'"),
+    env.DB.prepare("UPDATE transactions SET status = '已完成' WHERE status = '已到账'"),
+  ]);
 }
 
 export async function requireAppUser(): Promise<AppUser> {

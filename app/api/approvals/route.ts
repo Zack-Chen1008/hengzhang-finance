@@ -7,6 +7,9 @@ const stages:Record<string,{role:Role; next:string}> = {
   '待老板审批': { role:'owner', next:'待出纳付款' },
   '待出纳付款': { role:'cashier', next:'已完成' },
   '待财务确认': { role:'finance', next:'已完成' },
+  '审批中': { role:'manager', next:'待财务复核' },
+  '待确认': { role:'finance', next:'已完成' },
+  '待付款': { role:'cashier', next:'已完成' },
 };
 
 export async function POST(request:Request) {
