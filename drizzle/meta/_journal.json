@@ -15,6 +15,13 @@
       "when": 1787497914923,
       "tag": "0001_slim_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787561608547,
+      "tag": "0002_flaky_gwen_stacy",
+      "breakpoints": true
     }
   ]
 }

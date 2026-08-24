@@ -1,51 +1,74 @@
 import { env } from 'cloudflare:workers';
-import { getChatGPTUser } from '../../chatgpt-auth';
+import { errorResponse, makeId, mapTransaction, requireAppUser, requireRole } from '../../lib/server';
 
-type StoredTransaction = { id:string; type:'income'|'expense'; subject:string; counterparty:string; amount:number; status:string };
-
-async function ensureDatabase() {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS transactions (
-    id TEXT PRIMARY KEY,
-    type TEXT NOT NULL CHECK(type IN ('income','expense')),
-    subject TEXT NOT NULL,
-    counterparty TEXT NOT NULL,
-    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
-    note TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL,
-    created_by TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  )`).run();
-  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at DESC)').run();
-}
-
-function rowToItem(row: Record<string, unknown>): StoredTransaction {
-  return { id:String(row.id), type:row.type as 'income'|'expense', subject:String(row.subject), counterparty:String(row.counterparty), amount:Number(row.amount_cents) / 100, status:String(row.status) };
-}
-
-export async function GET() {
-  await ensureDatabase();
-  const result = await env.DB.prepare('SELECT id, type, subject, counterparty, amount_cents, status FROM transactions ORDER BY created_at DESC LIMIT 30').all();
-  return Response.json({ items: result.results.map(rowToItem) });
-}
-
-export async function POST(request: Request) {
-  const user = await getChatGPTUser();
-  if (!user) return Response.json({ error:'请先登录' }, { status:401 });
-  const body = await request.json() as Record<string, unknown>;
+function parseBody(body:Record<string, unknown>) {
   const type = body.type === 'income' ? 'income' : body.type === 'expense' ? 'expense' : null;
   const subject = String(body.subject ?? '').trim();
   const counterparty = String(body.counterparty ?? '').trim();
   const note = String(body.note ?? '').trim();
   const amount = Number(body.amount);
-  if (!type || !subject || !counterparty || !Number.isFinite(amount) || amount <= 0 || subject.length > 50 || counterparty.length > 60 || note.length > 200) {
-    return Response.json({ error:'请检查填写内容' }, { status:400 });
-  }
-  await ensureDatabase();
-  const now = new Date();
-  const prefix = type === 'income' ? 'SK' : 'FK';
-  const id = `${prefix}${now.toISOString().slice(0,10).replaceAll('-','')}${String(Date.now()).slice(-6)}`;
-  const status = type === 'income' ? '待确认' : '审批中';
-  await env.DB.prepare('INSERT INTO transactions (id,type,subject,counterparty,amount_cents,note,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-    .bind(id,type,subject,counterparty,Math.round(amount * 100),note,status,user.userId,now.toISOString()).run();
-  return Response.json({ item:{ id,type,subject,counterparty,amount,status } }, { status:201 });
+  if (!type || !subject || !counterparty || !Number.isFinite(amount) || amount <= 0 || subject.length > 80 || counterparty.length > 80 || note.length > 500) return null;
+  return { type, subject, counterparty, note, amount } as const;
+}
+
+export async function GET() {
+  try {
+    await requireAppUser();
+    const result = await env.DB.prepare(`SELECT t.*, (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id = t.id) AS attachment_count
+      FROM transactions t ORDER BY t.created_at DESC LIMIT 500`).all();
+    return Response.json({ items:result.results.map(mapTransaction) });
+  } catch (error) { return errorResponse(error); }
+}
+
+export async function POST(request:Request) {
+  try {
+    const user = await requireAppUser();
+    const parsed = parseBody(await request.json() as Record<string, unknown>);
+    if (!parsed) return Response.json({ error:'请完整填写正确的单据信息' }, { status:400 });
+    const now = new Date();
+    const id = makeId(parsed.type === 'income' ? 'SK' : 'FK');
+    const status = parsed.type === 'income' ? '待财务确认' : '待部门审批';
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO transactions (id,type,subject,counterparty,amount_cents,note,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .bind(id,parsed.type,parsed.subject,parsed.counterparty,Math.round(parsed.amount * 100),parsed.note,status,user.id,now.toISOString()),
+      env.DB.prepare('INSERT INTO approvals (id,transaction_id,stage,action,actor_id,actor_name,comment,created_at) VALUES (?,?,?,?,?,?,?,?)')
+        .bind(makeId('APR'),id,'申请提交','submitted',user.id,user.name,parsed.note,now.toISOString()),
+    ]);
+    return Response.json({ item:{ id,...parsed,status,createdBy:user.id,createdAt:now.toISOString(),attachmentCount:0 } }, { status:201 });
+  } catch (error) { return errorResponse(error); }
+}
+
+export async function PATCH(request:Request) {
+  try {
+    const user = await requireAppUser();
+    const body = await request.json() as Record<string, unknown>;
+    const id = String(body.id ?? '');
+    const parsed = parseBody(body);
+    if (!id || !parsed) return Response.json({ error:'请检查修改内容' }, { status:400 });
+    const existing = await env.DB.prepare('SELECT created_by,status FROM transactions WHERE id = ?').bind(id).first<Record<string, unknown>>();
+    if (!existing) return Response.json({ error:'单据不存在' }, { status:404 });
+    const editable = ['待部门审批','待财务确认','已驳回'].includes(String(existing.status));
+    if (!editable || (user.role !== 'super_admin' && String(existing.created_by) !== user.id)) return Response.json({ error:'当前状态不能修改，或您没有权限' }, { status:403 });
+    const status = parsed.type === 'income' ? '待财务确认' : '待部门审批';
+    await env.DB.prepare('UPDATE transactions SET type=?,subject=?,counterparty=?,amount_cents=?,note=?,status=? WHERE id=?')
+      .bind(parsed.type,parsed.subject,parsed.counterparty,Math.round(parsed.amount * 100),parsed.note,status,id).run();
+    return Response.json({ item:{ id,...parsed,status,createdBy:String(existing.created_by),createdAt:String(body.createdAt ?? ''),attachmentCount:Number(body.attachmentCount ?? 0) } });
+  } catch (error) { return errorResponse(error); }
+}
+
+export async function DELETE(request:Request) {
+  try {
+    const user = await requireAppUser();
+    requireRole(user, ['super_admin']);
+    const id = new URL(request.url).searchParams.get('id') ?? '';
+    if (!id) return Response.json({ error:'缺少单据编号' }, { status:400 });
+    const files = await env.DB.prepare('SELECT file_key FROM attachments WHERE transaction_id = ?').bind(id).all<Record<string, unknown>>();
+    await Promise.all(files.results.map((row) => env.FILES.delete(String(row.file_key))));
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM attachments WHERE transaction_id = ?').bind(id),
+      env.DB.prepare('DELETE FROM approvals WHERE transaction_id = ?').bind(id),
+      env.DB.prepare('DELETE FROM transactions WHERE id = ?').bind(id),
+    ]);
+    return Response.json({ ok:true });
+  } catch (error) { return errorResponse(error); }
 }

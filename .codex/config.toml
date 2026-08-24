@@ -1,0 +1,8 @@
+# 本项目使用自动审核，尽量避免人工点击“允许”。
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+sandbox_mode = "workspace-write"
+
+[apps._default]
+approvals_reviewer = "auto_review"
+default_tools_approval_mode = "auto"

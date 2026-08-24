@@ -2,17 +2,18 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '衡账 · 公司财务流程管理',
-  description: '集中管理公司收付款、审批、应收应付与资金报表。',
+  metadataBase: new URL('https://hengzhang-finance.chenzack.chatgpt.site'),
+  title: 'abc · 衡账财务流程管理',
+  description: 'abc 公司收付款、审批、应收应付、人员权限与财务报表管理。',
   openGraph: {
-    title: '衡账 · 公司财务流程管理',
-    description: '集中管理公司收付款、审批、应收应付与资金报表。',
+    title: 'abc · 衡账财务流程管理',
+    description: 'abc 公司收付款、审批、应收应付、人员权限与财务报表管理。',
     images: [{ url: '/og.png', width: 1680, height: 941, alt: '衡账公司财务流程管理' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: '衡账 · 公司财务流程管理',
-    description: '集中管理公司收付款、审批、应收应付与资金报表。',
+    title: 'abc · 衡账财务流程管理',
+    description: 'abc 公司收付款、审批、应收应付、人员权限与财务报表管理。',
     images: ['/og.png'],
   },
 };

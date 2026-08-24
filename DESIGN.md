@@ -2,9 +2,9 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-23
-- Primary product surfaces: 财务驾驶舱、收付款台账、审批中心、应收应付、报表
-- Evidence reviewed: 新建项目脚手架；用户要求“公司账务进出、财务进出流程”并指定网页形态
+- Last refreshed: 2026-08-24
+- Primary product surfaces: 财务驾驶舱、收付款台账、审批中心、应收应付、往来单位、人员管理、财务报表
+- Evidence reviewed: 现有衡账站点；用户确认公司名 abc、当前用户为超级管理员、完整审批流程和清空演示数据
 
 ## Brand
 - Personality: 稳健、清晰、可信、不过度金融化
@@ -12,7 +12,7 @@
 - Avoid: 花哨渐变、夸张动效、密集小字、把专业会计术语强加给普通员工
 
 ## Product goals
-- Goals: 让非财务员工能提交，让负责人能审批，让财务能复核并追踪收付款闭环
+- Goals: 让非财务员工能提交，让负责人、财务、老板和出纳按岗位完成审批与付款闭环
 - Non-goals: 第一版不承担税务申报、总账结账或法定财务报表
 - Success signals: 用户能在一分钟内判断资金情况，并在三步内发起收付款
 
@@ -22,8 +22,8 @@
 - Key contexts of use: 工作日桌面端高频处理，手机端查看和审批
 
 ## Information architecture
-- Primary navigation: 工作台、收付款、审批中心、应收应付、往来单位、财务报表
-- Core routes/screens: 第一版以单页工作台呈现，并通过页内交互演示关键流程
+- Primary navigation: 工作台、收付款、审批中心、应收应付、往来单位、人员管理、财务报表
+- Core routes/screens: 单页应用内的七个完整业务页面，菜单切换页面而非锚点跳转
 - Content hierarchy: 待办与风险优先，其次资金指标，再次趋势和最近流水
 
 ## Design principles
@@ -41,7 +41,7 @@
 
 ## Components
 - Existing components to reuse: 无
-- New/changed components: 侧栏、顶部操作区、指标卡、审批待办、资金趋势、流水表、收付款弹窗
+- New/changed components: 侧栏、顶部操作区、指标卡、审批待办、资金趋势、流水表、收付款弹窗、人员与角色表、往来单位表、附件区、确认弹窗、导出控件
 - Variants and states: 收入/支出、待审批/已通过/已驳回/已完成
 - Token/component ownership: 颜色与尺寸由 `app/globals.css` 管理
 
@@ -78,6 +78,6 @@
 - Test/screenshot expectations: 构建通过，核心操作键盘可用，响应式布局不溢出
 
 ## Open questions
-- [ ] 公司实际岗位与审批层级 / 用户 / 影响正式权限模型
-- [ ] 是否需要对接银行、企业微信或钉钉 / 用户 / 影响外部集成
-- [ ] 是否升级为完整会计核算 / 用户 / 影响科目、凭证和法定报表
+- [x] 公司与审批层级：abc；当前用户为超级管理员；付款与报销依次经过部门负责人、财务、老板、出纳
+- [ ] 是否需要对接银行、企业微信或钉钉 / 用户 / 后续外部集成
+- [ ] 是否升级为完整会计核算 / 用户 / 后续科目、凭证和法定报表
