@@ -9,6 +9,13 @@ export const INITIAL_PASSWORD = '123456';
 export const SUPER_ADMIN_EMAIL = 'chenzack1008@gmail.com';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 const PASSWORD_ITERATIONS = 100_000;
+const DEFAULT_ROLE_ACCOUNTS:{id:string;email:string;name:string;role:Role}[] = [
+  { id:'USR_DEFAULT_EMPLOYEE',email:'employee@abc.local',name:'普通员工',role:'employee' },
+  { id:'USR_DEFAULT_MANAGER',email:'manager@abc.local',name:'部门负责人',role:'manager' },
+  { id:'USR_DEFAULT_FINANCE',email:'finance@abc.local',name:'财务',role:'finance' },
+  { id:'USR_DEFAULT_OWNER',email:'owner@abc.local',name:'老板',role:'owner' },
+  { id:'USR_DEFAULT_CASHIER',email:'cashier@abc.local',name:'出纳',role:'cashier' },
+];
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS transactions (
@@ -91,6 +98,49 @@ const schemaStatements = [
     company_name TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS organization_items (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+    opening_balance_cents INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS invoices (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, invoice_number TEXT NOT NULL UNIQUE,
+    counterparty TEXT NOT NULL, amount_cents INTEGER NOT NULL, issue_date TEXT NOT NULL,
+    due_date TEXT, status TEXT NOT NULL DEFAULT 'unpaid', transaction_id TEXT,
+    note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS payment_plans (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, subject TEXT NOT NULL, counterparty TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL, due_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    invoice_id TEXT, note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS bank_statement_rows (
+    id TEXT PRIMARY KEY, account_id TEXT NOT NULL, occurred_on TEXT NOT NULL, description TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL, balance_cents INTEGER, reference TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'unmatched', transaction_id TEXT, imported_by TEXT NOT NULL, imported_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'system', dedupe_key TEXT UNIQUE, read_at TEXT, created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS notification_settings (
+    id INTEGER PRIMARY KEY CHECK(id=1), email_webhook TEXT NOT NULL DEFAULT '',
+    wechat_webhook TEXT NOT NULL DEFAULT '', dingtalk_webhook TEXT NOT NULL DEFAULT '',
+    email_enabled INTEGER NOT NULL DEFAULT 0, wechat_enabled INTEGER NOT NULL DEFAULT 0,
+    dingtalk_enabled INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, user_name TEXT NOT NULL, action TEXT NOT NULL,
+    entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS deleted_records (
+    id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, label TEXT NOT NULL,
+    record_json TEXT NOT NULL, deleted_by TEXT NOT NULL, deleted_by_name TEXT NOT NULL, deleted_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS backups (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, file_key TEXT NOT NULL, size INTEGER NOT NULL,
+    created_by TEXT NOT NULL, created_at TEXT NOT NULL
+  )`,
   'CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_approvals_transaction_id ON approvals(transaction_id, created_at)',
   'CREATE INDEX IF NOT EXISTS idx_attachments_transaction_id ON attachments(transaction_id)',
@@ -100,6 +150,18 @@ const schemaStatements = [
   'CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON auth_sessions(expires_at)',
   'CREATE INDEX IF NOT EXISTS idx_reset_requests_status ON password_reset_requests(status, requested_at)',
   'CREATE INDEX IF NOT EXISTS idx_reset_requests_user_id ON password_reset_requests(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_organization_items_kind ON organization_items(kind,status)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number ON invoices(invoice_number)',
+  'CREATE INDEX IF NOT EXISTS idx_invoices_due_date ON invoices(due_date,status)',
+  'CREATE INDEX IF NOT EXISTS idx_payment_plans_due_date ON payment_plans(due_date,status)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_statement_account_date ON bank_statement_rows(account_id,occurred_on)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_statement_status ON bank_statement_rows(status)',
+  'CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id,read_at,created_at)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications(dedupe_key)',
+  'CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type,entity_id)',
+  'CREATE INDEX IF NOT EXISTS idx_deleted_records_deleted_at ON deleted_records(deleted_at)',
+  'CREATE INDEX IF NOT EXISTS idx_backups_created_at ON backups(created_at)',
 ];
 
 function bytesToBase64Url(bytes:Uint8Array) {
@@ -144,6 +206,7 @@ export async function ensureDatabase() {
   await env.DB.batch(schemaStatements.map((sql) => env.DB.prepare(sql)));
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT OR IGNORE INTO company_settings (id,company_name,updated_at) VALUES (1,'abc',?)").bind(now).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO notification_settings (id,updated_at) VALUES (1,?)").bind(now).run();
 
   const admin = await env.DB.prepare('SELECT id FROM app_users WHERE lower(email)=lower(?) LIMIT 1')
     .bind(SUPER_ADMIN_EMAIL).first<Record<string, unknown>>();
@@ -153,6 +216,15 @@ export async function ensureDatabase() {
       .bind('USR_SUPER_ADMIN',SUPER_ADMIN_EMAIL,'陈泽宇','super_admin','active',password.hash,password.salt,now,now).run();
   } else {
     await env.DB.prepare("UPDATE app_users SET name='陈泽宇',role='super_admin',status='active',updated_at=? WHERE id=?").bind(now,String(admin.id)).run();
+  }
+
+  for (const account of DEFAULT_ROLE_ACCOUNTS) {
+    const exists = await env.DB.prepare('SELECT id FROM app_users WHERE lower(email)=lower(?) LIMIT 1').bind(account.email).first();
+    if (!exists) {
+      const password = await hashPassword(INITIAL_PASSWORD);
+      await env.DB.prepare('INSERT INTO app_users (id,auth_user_id,email,name,role,status,password_hash,password_salt,must_change_password,created_at,updated_at) VALUES (?,NULL,?,?,?,?,?,?,1,?,?)')
+        .bind(account.id,account.email,account.name,account.role,'active',password.hash,password.salt,now,now).run();
+    }
   }
 
   const usersWithoutPassword = await env.DB.prepare("SELECT id FROM app_users WHERE password_hash IS NULL OR password_hash='' OR password_salt IS NULL OR password_salt=''").all<Record<string, unknown>>();
@@ -209,6 +281,40 @@ export async function requireAppUser(options:{allowPasswordChange?:boolean} = {}
 
 export function requireRole(user: AppUser, roles: Role[]) {
   if (user.role !== 'super_admin' && !roles.includes(user.role)) throw new Response(JSON.stringify({ error:'您没有执行此操作的权限' }), { status:403, headers:{'content-type':'application/json'} });
+}
+
+export async function writeAudit(user:AppUser,action:string,entityType:string,entityId:string,detail='') {
+  await env.DB.prepare('INSERT INTO audit_logs (id,user_id,user_name,action,entity_type,entity_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .bind(makeId('LOG'),user.id,user.name,action,entityType,entityId,detail.slice(0,500),new Date().toISOString()).run();
+}
+
+export async function createRecycleRecord(user:AppUser,entityType:string,entityId:string,label:string,record:unknown) {
+  await env.DB.prepare('INSERT INTO deleted_records (id,entity_type,entity_id,label,record_json,deleted_by,deleted_by_name,deleted_at) VALUES (?,?,?,?,?,?,?,?)')
+    .bind(makeId('DEL'),entityType,entityId,label.slice(0,120),JSON.stringify(record),user.id,user.name,new Date().toISOString()).run();
+}
+
+export async function addNotification(userId:string,title:string,message:string,kind='system',dedupeKey:string|null=null) {
+  const statement = env.DB.prepare('INSERT OR IGNORE INTO notifications (id,user_id,title,message,kind,dedupe_key,created_at) VALUES (?,?,?,?,?,?,?)')
+    .bind(makeId('NOT'),userId,title.slice(0,80),message.slice(0,300),kind,dedupeKey,new Date().toISOString());
+  await statement.run();
+}
+
+export async function notifyRole(role:Role,title:string,message:string,kind='workflow') {
+  const users = await env.DB.prepare("SELECT id FROM app_users WHERE role=? AND status='active'").bind(role).all<Record<string, unknown>>();
+  if (users.results.length) await env.DB.batch(users.results.map((row) => env.DB.prepare('INSERT INTO notifications (id,user_id,title,message,kind,created_at) VALUES (?,?,?,?,?,?)')
+    .bind(makeId('NOT'),String(row.id),title.slice(0,80),message.slice(0,300),kind,new Date().toISOString())));
+  await sendExternalNotification(title,message);
+}
+
+export async function sendExternalNotification(title:string,message:string) {
+  const settings = await env.DB.prepare('SELECT email_webhook,wechat_webhook,dingtalk_webhook,email_enabled,wechat_enabled,dingtalk_enabled FROM notification_settings WHERE id=1').first<Record<string, unknown>>();
+  if (!settings) return;
+  const jobs:Promise<unknown>[] = [];
+  const post = (url:string,body:unknown) => fetch(url,{ method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body) }).catch(() => null);
+  if (settings.email_enabled && String(settings.email_webhook).startsWith('https://')) jobs.push(post(String(settings.email_webhook),{ title,message,source:'衡账' }));
+  if (settings.wechat_enabled && String(settings.wechat_webhook).startsWith('https://')) jobs.push(post(String(settings.wechat_webhook),{ msgtype:'text',text:{ content:`【${title}】${message}` } }));
+  if (settings.dingtalk_enabled && String(settings.dingtalk_webhook).startsWith('https://')) jobs.push(post(String(settings.dingtalk_webhook),{ msgtype:'text',text:{ content:`【${title}】${message}` } }));
+  await Promise.all(jobs);
 }
 
 export function makeId(prefix:string) {

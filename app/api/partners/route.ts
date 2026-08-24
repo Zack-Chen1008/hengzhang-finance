@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { errorResponse, makeId, requireAppUser, requireRole } from '../../lib/server';
+import { createRecycleRecord, errorResponse, makeId, requireAppUser, requireRole, writeAudit } from '../../lib/server';
 
 function parse(body:Record<string, unknown>) {
   const name = String(body.name ?? '').trim();
@@ -20,6 +20,7 @@ export async function POST(request:Request) {
     const id = makeId('PAR'); const now = new Date().toISOString();
     await env.DB.prepare('INSERT INTO partners (id,name,kind,contact,phone,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)')
       .bind(id,item.name,item.kind,item.contact,item.phone,item.note,now,now).run();
+    await writeAudit(user,'新增往来单位','partner',id,item.name);
     return Response.json({ item:{ id,...item,createdAt:now,updatedAt:now } }, { status:201 });
   } catch (error) { return errorResponse(error); }
 }
@@ -33,6 +34,7 @@ export async function PATCH(request:Request) {
     const updatedAt = new Date().toISOString();
     await env.DB.prepare('UPDATE partners SET name=?,kind=?,contact=?,phone=?,note=?,updated_at=? WHERE id=?')
       .bind(item.name,item.kind,item.contact,item.phone,item.note,updatedAt,id).run();
+    await writeAudit(user,'修改往来单位','partner',id,item.name);
     return Response.json({ item:{ id,...item,updatedAt } });
   } catch (error) { return errorResponse(error); }
 }
@@ -42,7 +44,7 @@ export async function DELETE(request:Request) {
     const user = await requireAppUser();
     requireRole(user,['finance','owner']);
     const id = new URL(request.url).searchParams.get('id') ?? '';
-    await env.DB.prepare('DELETE FROM partners WHERE id=?').bind(id).run();
+    const row=await env.DB.prepare('SELECT * FROM partners WHERE id=?').bind(id).first<Record<string,unknown>>();if(!row)return Response.json({error:'往来单位不存在'},{status:404});await createRecycleRecord(user,'partner',id,String(row.name),row);await env.DB.prepare('DELETE FROM partners WHERE id=?').bind(id).run();await writeAudit(user,'删除往来单位','partner',id,String(row.name));
     return Response.json({ ok:true });
   } catch (error) { return errorResponse(error); }
 }

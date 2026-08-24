@@ -1,6 +1,7 @@
 'use client';
 
 import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
+import AdvancedPages, { AdvancedData } from './advanced-pages';
 
 type Role = 'super_admin'|'employee'|'manager'|'finance'|'owner'|'cashier';
 type User = { id:string; email:string; name:string; role:Role; status:string; mustChangePassword:boolean; createdAt:string };
@@ -9,16 +10,17 @@ type Partner = { id:string; name:string; kind:string; contact:string; phone:stri
 type Approval = { id:string; transactionId:string; stage:string; action:string; actorName:string; comment:string; createdAt:string };
 type Attachment = { id:string; transactionId:string; filename:string; contentType:string; size:number; createdAt:string };
 type ResetRequest = { id:string; userId:string; name:string; email:string; requestedAt:string };
-type Bootstrap = { companyName:string; currentUser:User; users:User[]; transactions:Transaction[]; partners:Partner[]; approvals:Approval[]; attachments:Attachment[]; resetRequests:ResetRequest[] };
-type PageKey = 'dashboard'|'transactions'|'approvals'|'receivables'|'partners'|'users'|'reports';
+type Bootstrap = AdvancedData & { currentUser:User; users:User[]; transactions:Transaction[]; partners:Partner[]; approvals:Approval[]; attachments:Attachment[]; resetRequests:ResetRequest[] };
+type PageKey = 'dashboard'|'transactions'|'approvals'|'receivables'|'partners'|'users'|'reports'|'finance'|'notifications'|'settings'|'security';
 type ModalState = { type:'transaction'; item?:Transaction } | { type:'partner'; item?:Partner } | { type:'user'; item?:User } | { type:'detail'; item:Transaction } | { type:'approval'; item:Transaction; action:'approve'|'reject' } | null;
 
 const roleNames:Record<Role,string> = { super_admin:'超级管理员', employee:'普通员工', manager:'部门负责人', finance:'财务', owner:'老板', cashier:'出纳' };
 const assignableRoles:Role[] = ['employee','manager','finance','owner','cashier'];
-const pageNames:Record<PageKey,string> = { dashboard:'工作台', transactions:'收付款', approvals:'审批中心', receivables:'应收应付', partners:'往来单位', users:'人员管理', reports:'财务报表' };
+const pageNames:Record<PageKey,string> = { dashboard:'工作台', transactions:'收付款', approvals:'审批中心', receivables:'应收应付', partners:'往来单位', users:'人员管理', reports:'财务报表', finance:'财务工具', notifications:'消息中心', settings:'系统设置', security:'数据安全' };
 const navItems:{key:PageKey; icon:string; label:string}[] = [
   {key:'dashboard',icon:'⌂',label:'工作台'}, {key:'transactions',icon:'↔',label:'收付款'}, {key:'approvals',icon:'✓',label:'审批中心'},
   {key:'receivables',icon:'¥',label:'应收应付'}, {key:'partners',icon:'◇',label:'往来单位'}, {key:'users',icon:'♙',label:'人员管理'}, {key:'reports',icon:'▥',label:'财务报表'},
+  {key:'finance',icon:'▤',label:'财务工具'}, {key:'notifications',icon:'●',label:'消息中心'}, {key:'settings',icon:'⚙',label:'系统设置'}, {key:'security',icon:'◆',label:'数据安全'},
 ];
 const stageRoles:Record<string,Role> = { '待部门审批':'manager','待财务复核':'finance','待老板审批':'owner','待出纳付款':'cashier','待财务确认':'finance','审批中':'manager','待确认':'finance','待付款':'cashier' };
 
@@ -84,6 +86,15 @@ export default function FinanceApp() {
   const flash = (text:string) => { setNotice(text); window.setTimeout(() => setNotice(''),3500); };
   const current = data?.currentUser;
   const isAdmin = current?.role === 'super_admin';
+  const visibleNavItems = navItems.filter((item) => {
+    if(!current)return false;
+    if(['users','settings','security'].includes(item.key))return current.role==='super_admin';
+    if(item.key==='partners')return ['super_admin','finance','owner'].includes(current.role);
+    if(item.key==='finance')return ['super_admin','finance','owner','cashier'].includes(current.role);
+    if(item.key==='reports')return ['super_admin','finance','owner'].includes(current.role);
+    return true;
+  });
+  const resolvedActive:PageKey = visibleNavItems.some((item)=>item.key===active)?active:'dashboard';
   const canApprove = (transaction:Transaction) => Boolean(current && (current.role === 'super_admin' || stageRoles[transaction.status] === current.role));
   const pending = useMemo(() => data?.transactions.filter((item) => !['已完成','已驳回'].includes(item.status)) ?? [],[data]);
   const myApprovals = pending.filter(canApprove);
@@ -209,23 +220,23 @@ export default function FinanceApp() {
   const appData:Bootstrap = data;
   const appUser:User = current;
 
-  const page = active === 'dashboard' ? renderDashboard() : active === 'transactions' ? renderTransactions() : active === 'approvals' ? renderApprovals() : active === 'receivables' ? renderReceivables() : active === 'partners' ? renderPartners() : active === 'users' ? renderUsers() : renderReports();
+  const page = resolvedActive === 'dashboard' ? renderDashboard() : resolvedActive === 'transactions' ? renderTransactions() : resolvedActive === 'approvals' ? renderApprovals() : resolvedActive === 'receivables' ? renderReceivables() : resolvedActive === 'partners' ? renderPartners() : resolvedActive === 'users' ? renderUsers() : resolvedActive === 'reports' ? renderReports() : <AdvancedPages page={resolvedActive} data={appData} reload={reload} flash={flash}/>;
 
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">衡</span><div><strong>衡账</strong><small>{data.companyName}</small></div></div>
-      <nav aria-label="主要导航">{navItems.map((item)=><button key={item.key} className={`nav-item ${active===item.key?'active':''}`} onClick={()=>navigate(item.key)}><span>{item.icon}</span>{item.label}{item.key==='approvals'&&myApprovals.length>0?<b>{myApprovals.length}</b>:null}</button>)}</nav>
+      <nav aria-label="主要导航">{visibleNavItems.map((item)=><button key={item.key} className={`nav-item ${resolvedActive===item.key?'active':''}`} onClick={()=>navigate(item.key)}><span>{item.icon}</span>{item.label}{item.key==='approvals'&&myApprovals.length>0?<b>{myApprovals.length}</b>:item.key==='notifications'&&appData.notifications.filter((notice)=>!notice.readAt).length>0?<b>{appData.notifications.filter((notice)=>!notice.readAt).length}</b>:null}</button>)}</nav>
       <div className="sidebar-foot"><span className="avatar">{current.name.slice(0,1)}</span><div><strong>{current.name}</strong><small>{roleNames[current.role]}</small></div></div>
     </aside>
     <main className="main-content">
-      <header className="topbar"><div><p className="eyebrow">{data.companyName} · {pageNames[active]}</p><h1>{pageTitle(active)}</h1></div><div className="top-actions"><button className="secondary-button" onClick={()=>setModal({type:'transaction'})}>＋ 新建单据</button>{active==='transactions'||active==='reports'?<button className="primary-button" onClick={()=>exportExcel()}>⇩ 导出 Excel</button>:null}<button className="account-button" onClick={()=>{setForcedPasswordChange(false);setError('');setAuthView('change')}}>修改密码</button><button className="account-button" onClick={()=>void logout()}>退出登录</button></div></header>
+      <header className="topbar"><div><p className="eyebrow">{data.companyName} · {pageNames[resolvedActive]}</p><h1>{pageTitle(resolvedActive)}</h1></div><div className="top-actions"><button className="secondary-button" onClick={()=>setModal({type:'transaction'})}>＋ 新建单据</button>{resolvedActive==='transactions'||resolvedActive==='reports'?<button className="primary-button" onClick={()=>exportExcel()}>⇩ 导出 Excel</button>:null}<button className="account-button" onClick={()=>{setForcedPasswordChange(false);setError('');setAuthView('change')}}>修改密码</button><button className="account-button" onClick={()=>void logout()}>退出登录</button></div></header>
       {page}
     </main>
     {renderModal()}
     {notice?<div className="toast" role="status">{notice}</div>:null}
   </div>;
 
-  function pageTitle(key:PageKey){return ({dashboard:'公司资金一览',transactions:'收付款台账',approvals:'审批中心',receivables:'应收应付',partners:'往来单位',users:'人员与权限',reports:'财务报表'} as Record<PageKey,string>)[key];}
+  function pageTitle(key:PageKey){return ({dashboard:'公司资金一览',transactions:'收付款台账',approvals:'审批中心',receivables:'应收应付',partners:'往来单位',users:'人员与权限',reports:'财务报表',finance:'财务实用工具',notifications:'消息与提醒',settings:'公司与基础参数',security:'备份、恢复与审计'} as Record<PageKey,string>)[key];}
 
   function renderDashboard(){
     const metrics=[['本期收入',money(totals.income),'income'],['本期支出',money(totals.expense),'expense'],['账面结余',money(totals.balance),'balance'],['审批中金额',money(totals.pending),'pending']];

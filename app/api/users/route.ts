@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { errorResponse, hashPassword, INITIAL_PASSWORD, makeId, requireAppUser, requireRole, Role } from '../../lib/server';
+import { createRecycleRecord, errorResponse, hashPassword, INITIAL_PASSWORD, makeId, requireAppUser, requireRole, Role, writeAudit } from '../../lib/server';
 
 const roles:Role[] = ['employee','manager','finance','owner','cashier','super_admin'];
 const assignableRoles:Role[] = ['employee','manager','finance','owner','cashier'];
@@ -22,6 +22,7 @@ export async function POST(request:Request) {
     } catch {
       return Response.json({ error:'该邮箱已经存在' }, { status:409 });
     }
+    await writeAudit(current,'新增员工','user',id,`${name}:${role}`);
     return Response.json({ item:{ id,email,name,role,status:'active',mustChangePassword:true,createdAt:now }, initialPassword:INITIAL_PASSWORD }, { status:201 });
   } catch (error) { return errorResponse(error); }
 }
@@ -40,6 +41,7 @@ export async function PATCH(request:Request) {
     if (id === current.id && (role !== 'super_admin' || status !== 'active')) return Response.json({ error:'不能停用自己或取消自己的超级管理员权限' }, { status:400 });
     await env.DB.prepare('UPDATE app_users SET name=?,role=?,status=?,updated_at=? WHERE id=?').bind(name,role,status,new Date().toISOString(),id).run();
     if (status === 'disabled') await env.DB.prepare('DELETE FROM auth_sessions WHERE user_id=?').bind(id).run();
+    await writeAudit(current,'修改员工','user',id,`${name}:${role}:${status}`);
     return Response.json({ ok:true });
   } catch (error) { return errorResponse(error); }
 }
@@ -50,11 +52,12 @@ export async function DELETE(request:Request) {
     requireRole(current,['super_admin']);
     const id = new URL(request.url).searchParams.get('id') ?? '';
     if (!id || id === current.id) return Response.json({ error:'不能删除当前登录账号' }, { status:400 });
-    await env.DB.batch([
+    const row=await env.DB.prepare('SELECT * FROM app_users WHERE id=?').bind(id).first<Record<string,unknown>>();if(!row)return Response.json({error:'账号不存在'},{status:404});await createRecycleRecord(current,'user',id,String(row.name),row);await env.DB.batch([
       env.DB.prepare('DELETE FROM auth_sessions WHERE user_id=?').bind(id),
       env.DB.prepare('DELETE FROM password_reset_requests WHERE user_id=?').bind(id),
       env.DB.prepare('DELETE FROM app_users WHERE id=?').bind(id),
     ]);
+    await writeAudit(current,'删除员工','user',id,String(row.name));
     return Response.json({ ok:true });
   } catch (error) { return errorResponse(error); }
 }
