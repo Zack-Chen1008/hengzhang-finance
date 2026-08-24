@@ -1,15 +1,17 @@
 import { env } from 'cloudflare:workers';
-import { AppUser, makeId, writeAudit } from './server';
+import { AppUser, makeId } from './server';
 
 const backupTables = [
-  'company_settings','organization_items','transactions','partners','approvals','attachments',
+  'app_users','company_settings','organization_items','transactions','partners','approvals','attachments',
   'invoices','payment_plans','bank_statement_rows','notifications','notification_settings',
+  'notification_deliveries','audit_logs','deleted_records',
 ] as const;
 
 const restoreColumns:Record<(typeof backupTables)[number],string[]> = {
+  app_users:['id','auth_user_id','email','name','role','status','password_hash','password_salt','must_change_password','department_id','created_at','updated_at'],
   company_settings:['id','company_name','updated_at'],
   organization_items:['id','kind','name','detail','opening_balance_cents','status','created_at','updated_at'],
-  transactions:['id','type','subject','counterparty','amount_cents','note','status','created_by','created_at'],
+  transactions:['id','type','subject','counterparty','amount_cents','note','status','created_by','account_id','department_id','project_id','category_id','created_at'],
   partners:['id','name','kind','contact','phone','note','created_at','updated_at'],
   approvals:['id','transaction_id','stage','action','actor_id','actor_name','comment','created_at'],
   attachments:['id','transaction_id','file_key','filename','content_type','size','uploaded_by','created_at'],
@@ -18,26 +20,32 @@ const restoreColumns:Record<(typeof backupTables)[number],string[]> = {
   bank_statement_rows:['id','account_id','occurred_on','description','amount_cents','balance_cents','reference','status','transaction_id','imported_by','imported_at'],
   notifications:['id','user_id','title','message','kind','dedupe_key','read_at','created_at'],
   notification_settings:['id','email_webhook','wechat_webhook','dingtalk_webhook','email_enabled','wechat_enabled','dingtalk_enabled','updated_at'],
+  notification_deliveries:['id','channel','title','message','status','response_code','error','source_kind','source_id','created_at','sent_at'],
+  audit_logs:['id','user_id','user_name','action','entity_type','entity_id','detail','created_at'],
+  deleted_records:['id','entity_type','entity_id','label','record_json','deleted_by','deleted_by_name','deleted_at'],
 };
 
-export async function createBackup(user:AppUser,kind:'automatic'|'manual'|'pre_restore'='manual') {
+type BackupBindings={DB:D1Database;FILES:R2Bucket};
+
+export async function createBackup(user:AppUser,kind:'automatic'|'manual'|'pre_restore'='manual',bindings:BackupBindings={DB:env.DB,FILES:env.FILES}) {
   const data:Record<string,unknown[]> = {};
-  for (const table of backupTables) data[table] = (await env.DB.prepare(`SELECT * FROM ${table}`).all()).results;
+  for (const table of backupTables) data[table] = (await bindings.DB.prepare(`SELECT * FROM ${table}`).all()).results;
   const createdAt = new Date().toISOString();
   const id = makeId('BAK');
   const payload = JSON.stringify({ version:1,createdAt,createdBy:user.id,data });
   const fileKey = `backups/${createdAt.slice(0,10)}/${id}.json`;
-  await env.FILES.put(fileKey,payload,{ httpMetadata:{ contentType:'application/json; charset=utf-8' } });
-  await env.DB.prepare('INSERT INTO backups (id,kind,file_key,size,created_by,created_at) VALUES (?,?,?,?,?,?)')
+  await bindings.FILES.put(fileKey,payload,{ httpMetadata:{ contentType:'application/json; charset=utf-8' } });
+  await bindings.DB.prepare('INSERT INTO backups (id,kind,file_key,size,created_by,created_at) VALUES (?,?,?,?,?,?)')
     .bind(id,kind,fileKey,new TextEncoder().encode(payload).byteLength,user.id,createdAt).run();
-  await writeAudit(user,'创建备份','backup',id,kind);
+  await bindings.DB.prepare('INSERT INTO audit_logs (id,user_id,user_name,action,entity_type,entity_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .bind(makeId('LOG'),user.id,user.name,'创建备份','backup',id,kind,createdAt).run();
   return { id,kind,size:new TextEncoder().encode(payload).byteLength,createdAt };
 }
 
-export async function maybeCreateAutomaticBackup(user:AppUser) {
+export async function maybeCreateAutomaticBackup(user:AppUser,bindings:BackupBindings={DB:env.DB,FILES:env.FILES}) {
   const today = new Date().toISOString().slice(0,10);
-  const exists = await env.DB.prepare("SELECT id FROM backups WHERE kind='automatic' AND substr(created_at,1,10)=? LIMIT 1").bind(today).first();
-  if (!exists) await createBackup(user,'automatic');
+  const exists = await bindings.DB.prepare("SELECT id FROM backups WHERE kind='automatic' AND substr(created_at,1,10)=? LIMIT 1").bind(today).first();
+  if (!exists) await createBackup(user,'automatic',bindings);
 }
 
 export async function restoreBackup(user:AppUser,backupId:string) {
@@ -59,5 +67,6 @@ export async function restoreBackup(user:AppUser,backupId:string) {
       if (statements.length) await env.DB.batch(statements);
     }
   }
-  await writeAudit(user,'恢复备份','backup',backupId,'完整业务数据恢复');
+  await env.DB.prepare('INSERT INTO audit_logs (id,user_id,user_name,action,entity_type,entity_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .bind(makeId('LOG'),user.id,user.name,'恢复备份','backup',backupId,'完整业务数据恢复',new Date().toISOString()).run();
 }

@@ -9,8 +9,16 @@ export const transactions = sqliteTable('transactions', {
   note: text('note').notNull().default(''),
   status: text('status').notNull(),
   createdBy: text('created_by').notNull(),
+  accountId: text('account_id'),
+  departmentId: text('department_id'),
+  projectId: text('project_id'),
+  categoryId: text('category_id'),
   createdAt: text('created_at').notNull(),
-}, (table) => [index('idx_transactions_created_at').on(table.createdAt)]);
+}, (table) => [
+  index('idx_transactions_created_at').on(table.createdAt),
+  index('idx_transactions_department').on(table.departmentId,table.createdAt),
+  index('idx_transactions_account').on(table.accountId,table.createdAt),
+]);
 
 export const appUsers = sqliteTable('app_users', {
   id:text('id').primaryKey(),
@@ -22,9 +30,10 @@ export const appUsers = sqliteTable('app_users', {
   passwordHash:text('password_hash').notNull().default(''),
   passwordSalt:text('password_salt').notNull().default(''),
   mustChangePassword:integer('must_change_password', { mode:'boolean' }).notNull().default(true),
+  departmentId:text('department_id'),
   createdAt:text('created_at').notNull(),
   updatedAt:text('updated_at').notNull(),
-}, (table) => [uniqueIndex('idx_users_email').on(table.email), index('idx_users_auth_user_id').on(table.authUserId)]);
+}, (table) => [uniqueIndex('idx_users_email').on(table.email), index('idx_users_auth_user_id').on(table.authUserId), index('idx_users_department').on(table.departmentId,table.status)]);
 
 export const authSessions = sqliteTable('auth_sessions', {
   id:text('id').primaryKey(),
@@ -197,3 +206,27 @@ export const backups = sqliteTable('backups', {
   createdBy:text('created_by').notNull(),
   createdAt:text('created_at').notNull(),
 }, (table) => [index('idx_backups_created_at').on(table.createdAt)]);
+
+export const notificationDeliveries = sqliteTable('notification_deliveries', {
+  id:text('id').primaryKey(),
+  channel:text('channel').notNull(),
+  title:text('title').notNull(),
+  message:text('message').notNull(),
+  status:text('status').notNull(),
+  responseCode:integer('response_code'),
+  error:text('error').notNull().default(''),
+  sourceKind:text('source_kind').notNull().default('system'),
+  sourceId:text('source_id'),
+  createdAt:text('created_at').notNull(),
+  sentAt:text('sent_at'),
+}, (table) => [index('idx_notification_deliveries_created').on(table.createdAt), index('idx_notification_deliveries_status').on(table.status,table.createdAt)]);
+
+export const dailyJobRuns = sqliteTable('daily_job_runs', {
+  id:text('id').primaryKey(),
+  jobName:text('job_name').notNull(),
+  runDate:text('run_date').notNull(),
+  status:text('status').notNull(),
+  detail:text('detail').notNull().default(''),
+  startedAt:text('started_at').notNull(),
+  completedAt:text('completed_at'),
+}, (table) => [uniqueIndex('idx_daily_job_unique').on(table.jobName,table.runDate), index('idx_daily_job_started').on(table.startedAt)]);

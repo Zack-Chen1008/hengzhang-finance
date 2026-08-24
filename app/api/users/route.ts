@@ -12,18 +12,24 @@ export async function POST(request:Request) {
     const email = String(body.email ?? '').trim().toLowerCase();
     const name = String(body.name ?? '').trim();
     const role = String(body.role ?? '') as Role;
+    const departmentId = String(body.departmentId ?? '').trim() || null;
     if (!/^\S+@\S+\.\S+$/.test(email) || !name || name.length > 50 || !assignableRoles.includes(role)) return Response.json({ error:'请填写正确的姓名、邮箱和岗位' }, { status:400 });
+    if (['employee','manager'].includes(role) && !departmentId) return Response.json({ error:'普通员工和部门负责人必须分配部门' }, { status:400 });
+    if (departmentId) {
+      const department=await env.DB.prepare("SELECT id FROM organization_items WHERE id=? AND kind='department' AND status='active'").bind(departmentId).first();
+      if (!department) return Response.json({ error:'所选部门不存在或已停用' },{status:400});
+    }
     const id = makeId('USR');
     const now = new Date().toISOString();
     const password = await hashPassword(INITIAL_PASSWORD);
     try {
-      await env.DB.prepare('INSERT INTO app_users (id,auth_user_id,email,name,role,status,password_hash,password_salt,must_change_password,created_at,updated_at) VALUES (?,NULL,?,?,?,?,?,?,1,?,?)')
-        .bind(id,email,name,role,'active',password.hash,password.salt,now,now).run();
+      await env.DB.prepare('INSERT INTO app_users (id,auth_user_id,email,name,role,status,password_hash,password_salt,must_change_password,department_id,created_at,updated_at) VALUES (?,NULL,?,?,?,?,?,?,1,?,?,?)')
+        .bind(id,email,name,role,'active',password.hash,password.salt,departmentId,now,now).run();
     } catch {
       return Response.json({ error:'该邮箱已经存在' }, { status:409 });
     }
     await writeAudit(current,'新增员工','user',id,`${name}:${role}`);
-    return Response.json({ item:{ id,email,name,role,status:'active',mustChangePassword:true,createdAt:now }, initialPassword:INITIAL_PASSWORD }, { status:201 });
+    return Response.json({ item:{ id,email,name,role,status:'active',mustChangePassword:true,departmentId,createdAt:now }, initialPassword:INITIAL_PASSWORD }, { status:201 });
   } catch (error) { return errorResponse(error); }
 }
 
@@ -35,11 +41,17 @@ export async function PATCH(request:Request) {
     const id = String(body.id ?? '');
     const name = String(body.name ?? '').trim();
     const role = String(body.role ?? '') as Role;
+    const departmentId = String(body.departmentId ?? '').trim() || null;
     const status = body.status === 'disabled' ? 'disabled' : 'active';
     if (!id || !name || !roles.includes(role)) return Response.json({ error:'修改内容不完整' }, { status:400 });
+    if (['employee','manager'].includes(role) && !departmentId) return Response.json({ error:'普通员工和部门负责人必须分配部门' }, { status:400 });
+    if (departmentId) {
+      const department=await env.DB.prepare("SELECT id FROM organization_items WHERE id=? AND kind='department' AND status='active'").bind(departmentId).first();
+      if (!department) return Response.json({ error:'所选部门不存在或已停用' },{status:400});
+    }
     if (id !== current.id && role === 'super_admin') return Response.json({ error:'陈泽宇是唯一的超级管理员' }, { status:400 });
     if (id === current.id && (role !== 'super_admin' || status !== 'active')) return Response.json({ error:'不能停用自己或取消自己的超级管理员权限' }, { status:400 });
-    await env.DB.prepare('UPDATE app_users SET name=?,role=?,status=?,updated_at=? WHERE id=?').bind(name,role,status,new Date().toISOString(),id).run();
+    await env.DB.prepare('UPDATE app_users SET name=?,role=?,status=?,department_id=?,updated_at=? WHERE id=?').bind(name,role,status,departmentId,new Date().toISOString(),id).run();
     if (status === 'disabled') await env.DB.prepare('DELETE FROM auth_sessions WHERE user_id=?').bind(id).run();
     await writeAudit(current,'修改员工','user',id,`${name}:${role}:${status}`);
     return Response.json({ ok:true });

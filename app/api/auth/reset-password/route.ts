@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { errorResponse, hashPassword, INITIAL_PASSWORD, requireAppUser, requireRole } from '../../../lib/server';
+import { errorResponse, hashPassword, INITIAL_PASSWORD, requireAppUser, requireRole, writeAudit } from '../../../lib/server';
 
 export async function POST(request:Request) {
   try {
@@ -17,6 +17,7 @@ export async function POST(request:Request) {
       env.DB.prepare('DELETE FROM auth_sessions WHERE user_id=?').bind(userId),
       env.DB.prepare("UPDATE password_reset_requests SET status='processed',processed_at=?,processed_by=? WHERE user_id=? AND status='pending'").bind(now,current.id,userId),
     ]);
+    await writeAudit(current,'管理员重置密码','user',userId,'重置为初始密码并要求首次改密');
     return Response.json({ message:'密码已重置为123456，该账号下次登录必须修改密码。' });
   } catch (error) { return errorResponse(error); }
 }
