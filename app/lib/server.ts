@@ -8,7 +8,7 @@ export const SESSION_COOKIE = 'hengzhang_session';
 export const INITIAL_PASSWORD = '123456';
 export const SUPER_ADMIN_EMAIL = 'chenzack1008@gmail.com';
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
-const PASSWORD_ITERATIONS = 210_000;
+const PASSWORD_ITERATIONS = 100_000;
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS transactions (
