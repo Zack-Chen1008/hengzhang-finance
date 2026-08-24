@@ -3,16 +3,18 @@
 import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 
 type Role = 'super_admin'|'employee'|'manager'|'finance'|'owner'|'cashier';
-type User = { id:string; email:string; name:string; role:Role; status:string; createdAt:string };
+type User = { id:string; email:string; name:string; role:Role; status:string; mustChangePassword:boolean; createdAt:string };
 type Transaction = { id:string; type:'income'|'expense'; subject:string; counterparty:string; amount:number; note:string; status:string; createdBy:string; createdAt:string; attachmentCount:number };
 type Partner = { id:string; name:string; kind:string; contact:string; phone:string; note:string; createdAt?:string; updatedAt:string };
 type Approval = { id:string; transactionId:string; stage:string; action:string; actorName:string; comment:string; createdAt:string };
 type Attachment = { id:string; transactionId:string; filename:string; contentType:string; size:number; createdAt:string };
-type Bootstrap = { companyName:string; currentUser:User; users:User[]; transactions:Transaction[]; partners:Partner[]; approvals:Approval[]; attachments:Attachment[] };
+type ResetRequest = { id:string; userId:string; name:string; email:string; requestedAt:string };
+type Bootstrap = { companyName:string; currentUser:User; users:User[]; transactions:Transaction[]; partners:Partner[]; approvals:Approval[]; attachments:Attachment[]; resetRequests:ResetRequest[] };
 type PageKey = 'dashboard'|'transactions'|'approvals'|'receivables'|'partners'|'users'|'reports';
 type ModalState = { type:'transaction'; item?:Transaction } | { type:'partner'; item?:Partner } | { type:'user'; item?:User } | { type:'detail'; item:Transaction } | { type:'approval'; item:Transaction; action:'approve'|'reject' } | null;
 
 const roleNames:Record<Role,string> = { super_admin:'超级管理员', employee:'普通员工', manager:'部门负责人', finance:'财务', owner:'老板', cashier:'出纳' };
+const assignableRoles:Role[] = ['employee','manager','finance','owner','cashier'];
 const pageNames:Record<PageKey,string> = { dashboard:'工作台', transactions:'收付款', approvals:'审批中心', receivables:'应收应付', partners:'往来单位', users:'人员管理', reports:'财务报表' };
 const navItems:{key:PageKey; icon:string; label:string}[] = [
   {key:'dashboard',icon:'⌂',label:'工作台'}, {key:'transactions',icon:'↔',label:'收付款'}, {key:'approvals',icon:'✓',label:'审批中心'},
@@ -25,16 +27,30 @@ const dateText = (value:string) => value ? new Date(value).toLocaleString('zh-CN
 const kindText = (kind:string) => ({customer:'客户',supplier:'供应商',both:'客户兼供应商'}[kind] ?? kind);
 const escapeXml = (value:string|number) => String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 
+class ApiError extends Error {
+  code?:string;
+  status:number;
+  constructor(message:string,status:number,code?:string){super(message);this.name='ApiError';this.status=status;this.code=code;}
+}
+
+function AuthLayout({title,subtitle,children}:{title:string;subtitle:string;children:ReactNode}){
+  return <main className="auth-page"><section className="auth-card"><header><span className="auth-mark">衡</span><div><strong>衡账</strong><small>abc 公司财务管理</small></div></header><div className="auth-heading"><p>安全登录</p><h1>{title}</h1><span>{subtitle}</span></div>{children}<footer>账号由超级管理员陈泽宇统一管理</footer></section></main>;
+}
+
 async function api<T>(url:string, options?:RequestInit):Promise<T> {
   const response = await fetch(url,options);
-  const data = await response.json().catch(() => ({})) as { error?:string } & T;
-  if (!response.ok) throw new Error(data.error ?? '操作失败');
+  const data = await response.json().catch(() => ({})) as { error?:string; code?:string } & T;
+  if (!response.ok) throw new ApiError(data.error ?? '操作失败',response.status,data.code);
   return data as T;
 }
 
 export default function FinanceApp() {
   const [data,setData] = useState<Bootstrap|null>(null);
-  const [active,setActive] = useState<PageKey>('dashboard');
+  const [active,setActive] = useState<PageKey>(() => {
+    if(typeof window==='undefined')return 'dashboard';
+    const hash=window.location.hash.slice(1) as PageKey;
+    return pageNames[hash]?hash:'dashboard';
+  });
   const [modal,setModal] = useState<ModalState>(null);
   const [query,setQuery] = useState('');
   const [typeFilter,setTypeFilter] = useState('all');
@@ -42,16 +58,26 @@ export default function FinanceApp() {
   const [notice,setNotice] = useState('');
   const [error,setError] = useState('');
   const [busy,setBusy] = useState(false);
+  const [authView,setAuthView] = useState<'checking'|'login'|'forgot'|'change'|'app'>('checking');
+  const [forcedPasswordChange,setForcedPasswordChange] = useState(false);
 
   const reload = async () => {
     try { setError(''); setData(await api<Bootstrap>('/api/bootstrap')); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : '加载失败'); }
+    catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'AUTH_REQUIRED') { setData(null); setAuthView('login'); return; }
+      if (cause instanceof ApiError && cause.code === 'PASSWORD_CHANGE_REQUIRED') { setData(null); setForcedPasswordChange(true); setAuthView('change'); return; }
+      setError(cause instanceof Error ? cause.message : '加载失败');
+    }
   };
 
   useEffect(() => {
-    const hash = window.location.hash.slice(1) as PageKey;
-    if (pageNames[hash]) setActive(hash);
-    void reload();
+    void (async () => {
+      try {
+        const session = await api<{user:User}>('/api/auth/session');
+        if (session.user.mustChangePassword) { setForcedPasswordChange(true); setAuthView('change'); }
+        else { setAuthView('app'); await reload(); }
+      } catch { setAuthView('login'); }
+    })();
   }, []);
 
   const navigate = (key:PageKey) => { setActive(key); window.history.replaceState(null,'',`#${key}`); };
@@ -59,7 +85,7 @@ export default function FinanceApp() {
   const current = data?.currentUser;
   const isAdmin = current?.role === 'super_admin';
   const canApprove = (transaction:Transaction) => Boolean(current && (current.role === 'super_admin' || stageRoles[transaction.status] === current.role));
-  const pending = data?.transactions.filter((item) => !['已完成','已驳回'].includes(item.status)) ?? [];
+  const pending = useMemo(() => data?.transactions.filter((item) => !['已完成','已驳回'].includes(item.status)) ?? [],[data]);
   const myApprovals = pending.filter(canApprove);
 
   const filteredTransactions = useMemo(() => {
@@ -77,6 +103,37 @@ export default function FinanceApp() {
     const expense = rows.filter((item) => item.type === 'expense').reduce((sum,item) => sum + item.amount,0);
     return {income,expense,balance:income-expense,pending:pending.reduce((sum,item) => sum + item.amount,0)};
   },[data,pending]);
+
+  async function submitLogin(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form=new FormData(event.currentTarget); setBusy(true); setError('');
+    try {
+      const result=await api<{user:User}>('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:String(form.get('email')),password:String(form.get('password'))})});
+      if(result.user.mustChangePassword){setForcedPasswordChange(true);setAuthView('change');}
+      else{setAuthView('app');await reload();}
+    } catch(cause){setError(cause instanceof Error?cause.message:'登录失败');} finally{setBusy(false);}
+  }
+
+  async function submitForgotPassword(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form=new FormData(event.currentTarget); setBusy(true); setError('');
+    try{const result=await api<{message:string}>('/api/auth/forgot-password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:String(form.get('email'))})});setNotice(result.message);setAuthView('login');}
+    catch(cause){setError(cause instanceof Error?cause.message:'申请失败');}finally{setBusy(false);}
+  }
+
+  async function submitChangePassword(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form=new FormData(event.currentTarget); setBusy(true); setError('');
+    try{await api('/api/auth/change-password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({currentPassword:String(form.get('currentPassword')??''),newPassword:String(form.get('newPassword')),confirmPassword:String(form.get('confirmPassword'))})});setForcedPasswordChange(false);setAuthView('app');await reload();flash('密码修改成功');}
+    catch(cause){setError(cause instanceof Error?cause.message:'修改失败');}finally{setBusy(false);}
+  }
+
+  async function logout() {
+    try{await api('/api/auth/logout',{method:'POST'});}finally{setData(null);setError('');setNotice('');setAuthView('login');window.history.replaceState(null,'','#dashboard');}
+  }
+
+  async function resetUserPassword(userId:string,name:string) {
+    if(!window.confirm(`确定把“${name}”的密码重置为123456吗？该账号需要重新登录并修改密码。`))return;
+    try{const result=await api<{message:string}>('/api/auth/reset-password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({userId})});await reload();flash(result.message);}
+    catch(cause){flash(cause instanceof Error?cause.message:'重置失败');}
+  }
 
   async function submitTransaction(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!modal || modal.type !== 'transaction') return;
@@ -114,7 +171,7 @@ export default function FinanceApp() {
   async function submitUser(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); if(!modal||modal.type!=='user')return; const existing=modal.item; const form=new FormData(event.currentTarget);
     const body={id:existing?.id,email:String(form.get('email')),name:String(form.get('name')),role:String(form.get('role')),status:String(form.get('status')??'active')}; setBusy(true);
-    try{await api('/api/users',{method:existing?'PATCH':'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});setModal(null);await reload();flash(existing?'人员信息已修改':'人员已添加，使用该邮箱登录后即可进入系统');}
+    try{await api('/api/users',{method:existing?'PATCH':'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});setModal(null);await reload();flash(existing?'人员信息已修改':'人员已添加，初始密码为123456，首次登录必须改密');}
     catch(cause){flash(cause instanceof Error?cause.message:'保存失败');}finally{setBusy(false);}
   }
 
@@ -142,6 +199,10 @@ export default function FinanceApp() {
     const url=URL.createObjectURL(new Blob(['\ufeff',xml],{type:'application/vnd.ms-excel;charset=utf-8'})); const link=document.createElement('a'); link.href=url; link.download=`${data?.companyName??'公司'}-账务明细-${new Date().toISOString().slice(0,10)}.xls`; link.click(); URL.revokeObjectURL(url); flash(`已导出 ${rows.length} 条账务记录`);
   }
 
+  if(authView==='checking')return <div className="state-screen"><div className="loader"/><h1>正在进入衡账</h1><p>请稍候</p></div>;
+  if(authView==='login')return <AuthLayout title="登录衡账" subtitle="使用陈泽宇在人员管理中分配的账号"><form className="auth-form" onSubmit={submitLogin}><label>邮箱<input name="email" type="email" autoComplete="username" required placeholder="请输入登录邮箱"/></label><label>密码<input name="password" type="password" autoComplete="current-password" required placeholder="请输入密码"/></label>{error?<p className="auth-error">{error}</p>:null}{notice?<p className="auth-success">{notice}</p>:null}<button className="auth-submit" disabled={busy}>{busy?'正在登录…':'登录'}</button><button type="button" className="auth-link" onClick={()=>{setError('');setNotice('');setAuthView('forgot')}}>忘记密码</button></form><p className="auth-note">新账号初始密码为 123456，首次登录后必须修改。</p></AuthLayout>;
+  if(authView==='forgot')return <AuthLayout title="申请重置密码" subtitle="提交后由超级管理员陈泽宇处理"><form className="auth-form" onSubmit={submitForgotPassword}><label>登录邮箱<input name="email" type="email" autoComplete="username" required placeholder="请输入账号邮箱"/></label>{error?<p className="auth-error">{error}</p>:null}<button className="auth-submit" disabled={busy}>{busy?'正在提交…':'提交重置申请'}</button><button type="button" className="auth-link" onClick={()=>{setError('');setAuthView('login')}}>返回登录</button></form></AuthLayout>;
+  if(authView==='change')return <AuthLayout title={forcedPasswordChange?'首次登录，请修改密码':'修改密码'} subtitle={forcedPasswordChange?'为了账号安全，请先设置自己的新密码':'修改后其他设备的登录会失效'}><form className="auth-form" onSubmit={submitChangePassword}>{!forcedPasswordChange?<label>当前密码<input name="currentPassword" type="password" autoComplete="current-password" required/></label>:null}<label>新密码<input name="newPassword" type="password" minLength={8} maxLength={100} autoComplete="new-password" required placeholder="至少8位，不能使用123456"/></label><label>确认新密码<input name="confirmPassword" type="password" minLength={8} maxLength={100} autoComplete="new-password" required placeholder="再次输入新密码"/></label>{error?<p className="auth-error">{error}</p>:null}<button className="auth-submit" disabled={busy}>{busy?'正在保存…':'保存新密码并进入系统'}</button><button type="button" className="auth-link" onClick={()=>forcedPasswordChange?void logout():(setError(''),setAuthView('app'))}>{forcedPasswordChange?'退出并返回登录':'返回系统'}</button></form></AuthLayout>;
   if (!data && !error) return <div className="state-screen"><div className="loader"/><h1>正在读取 abc 财务数据</h1><p>请稍候</p></div>;
   if (error) return <div className="state-screen error-screen"><span>!</span><h1>暂时无法进入系统</h1><p>{error}</p><button onClick={()=>void reload()}>重新加载</button></div>;
   if (!data || !current) return null;
@@ -157,7 +218,7 @@ export default function FinanceApp() {
       <div className="sidebar-foot"><span className="avatar">{current.name.slice(0,1)}</span><div><strong>{current.name}</strong><small>{roleNames[current.role]}</small></div></div>
     </aside>
     <main className="main-content">
-      <header className="topbar"><div><p className="eyebrow">{data.companyName} · {pageNames[active]}</p><h1>{pageTitle(active)}</h1></div><div className="top-actions"><button className="secondary-button" onClick={()=>setModal({type:'transaction'})}>＋ 新建单据</button>{active==='transactions'||active==='reports'?<button className="primary-button" onClick={()=>exportExcel()}>⇩ 导出 Excel</button>:null}</div></header>
+      <header className="topbar"><div><p className="eyebrow">{data.companyName} · {pageNames[active]}</p><h1>{pageTitle(active)}</h1></div><div className="top-actions"><button className="secondary-button" onClick={()=>setModal({type:'transaction'})}>＋ 新建单据</button>{active==='transactions'||active==='reports'?<button className="primary-button" onClick={()=>exportExcel()}>⇩ 导出 Excel</button>:null}<button className="account-button" onClick={()=>{setForcedPasswordChange(false);setError('');setAuthView('change')}}>修改密码</button><button className="account-button" onClick={()=>void logout()}>退出登录</button></div></header>
       {page}
     </main>
     {renderModal()}
@@ -191,7 +252,7 @@ export default function FinanceApp() {
   }
 
   function renderUsers(){
-    return <section className="panel data-panel"><div className="section-actions"><div><h2>人员与权限</h2><p>通过登录邮箱识别员工，按岗位控制审批权限</p></div>{isAdmin?<button className="primary-button" onClick={()=>setModal({type:'user'})}>＋ 添加员工</button>:null}</div><div className="role-legend">{(['employee','manager','finance','owner','cashier','super_admin'] as Role[]).map((role)=><span key={role}><i className={`role-dot ${role}`}/>{roleNames[role]}</span>)}</div><div className="table-wrap"><table><thead><tr><th>姓名</th><th>登录邮箱</th><th>岗位</th><th>状态</th><th>加入时间</th><th>操作</th></tr></thead><tbody>{appData.users.map((item)=><tr key={item.id}><td><strong>{item.name}</strong>{item.id===appUser.id?<small>当前账号</small>:null}</td><td>{item.email}</td><td>{roleNames[item.role]}</td><td><Status value={item.status==='active'?'正常':'已停用'}/></td><td>{dateText(item.createdAt)}</td><td>{isAdmin?<div className="row-actions"><button onClick={()=>setModal({type:'user',item})}>修改</button>{item.id!==appUser.id?<button className="danger" onClick={()=>void removeUser(item)}>删除</button>:null}</div>:'—'}</td></tr>)}</tbody></table></div></section>;
+    return <section className="panel data-panel"><div className="section-actions"><div><h2>人员与权限</h2><p>员工使用邮箱和密码登录，岗位决定审批权限</p></div>{isAdmin?<button className="primary-button" onClick={()=>setModal({type:'user'})}>＋ 添加员工</button>:null}</div>{isAdmin&&appData.resetRequests.length>0?<div className="reset-request-box"><div><strong>密码重置申请</strong><span>{appData.resetRequests.length} 个待处理</span></div>{appData.resetRequests.map((request)=><article key={request.id}><span><strong>{request.name}</strong><small>{request.email} · {dateText(request.requestedAt)}</small></span><button onClick={()=>void resetUserPassword(request.userId,request.name)}>重置为 123456</button></article>)}</div>:null}<div className="role-legend">{(['employee','manager','finance','owner','cashier','super_admin'] as Role[]).map((role)=><span key={role}><i className={`role-dot ${role}`}/>{roleNames[role]}</span>)}</div><div className="table-wrap"><table><thead><tr><th>姓名</th><th>登录邮箱</th><th>岗位</th><th>登录状态</th><th>加入时间</th><th>操作</th></tr></thead><tbody>{appData.users.map((item)=><tr key={item.id}><td><strong>{item.name}</strong>{item.id===appUser.id?<small>当前账号</small>:null}</td><td>{item.email}</td><td>{roleNames[item.role]}</td><td><Status value={item.status!=='active'?'已停用':item.mustChangePassword?'待首次改密':'正常'}/></td><td>{dateText(item.createdAt)}</td><td>{isAdmin?<div className="row-actions"><button onClick={()=>setModal({type:'user',item})}>修改</button>{item.id!==appUser.id?<><button onClick={()=>void resetUserPassword(item.id,item.name)}>重置密码</button><button className="danger" onClick={()=>void removeUser(item)}>删除</button></>:null}</div>:'—'}</td></tr>)}</tbody></table></div></section>;
   }
 
   function renderReports(){
@@ -203,7 +264,7 @@ export default function FinanceApp() {
     if(!modal)return null;
     if(modal.type==='transaction'){const item=modal.item;return <Modal title={item?'修改单据':'新建收付款单据'} subtitle="提交后自动进入公司审批流程"><form onSubmit={submitTransaction}><div className="field-row"><label>业务类型<select name="type" defaultValue={item?.type??'expense'}><option value="expense">付款 / 报销</option><option value="income">收款</option></select></label><label>金额（元）<input name="amount" type="number" min="0.01" step="0.01" defaultValue={item?.amount} required placeholder="0.00"/></label></div><label>业务事项<input name="subject" defaultValue={item?.subject} maxLength={80} required placeholder="例如：办公设备采购"/></label><label>往来单位 / 人员<input name="counterparty" defaultValue={item?.counterparty} maxLength={80} required placeholder="请输入客户、供应商或员工姓名"/></label><label>说明<textarea name="note" rows={3} maxLength={500} defaultValue={item?.note} placeholder="合同、项目、用途等补充信息"/></label><div className="form-tip">付款与报销：部门负责人 → 财务 → 老板 → 出纳；收款：财务确认</div><FormActions/></form></Modal>}
     if(modal.type==='partner'){const item=modal.item;return <Modal title={item?'修改往来单位':'添加往来单位'} subtitle="客户与供应商统一管理"><form onSubmit={submitPartner}><label>单位名称<input name="name" defaultValue={item?.name} maxLength={80} required/></label><div className="field-row"><label>类型<select name="kind" defaultValue={item?.kind??'customer'}><option value="customer">客户</option><option value="supplier">供应商</option><option value="both">客户兼供应商</option></select></label><label>联系人<input name="contact" defaultValue={item?.contact} maxLength={50}/></label></div><label>联系电话<input name="phone" defaultValue={item?.phone} maxLength={30}/></label><label>备注<textarea name="note" rows={3} defaultValue={item?.note} maxLength={300}/></label><FormActions/></form></Modal>}
-    if(modal.type==='user'){const item=modal.item;return <Modal title={item?'修改人员权限':'添加员工'} subtitle="员工使用这里填写的邮箱登录"><form onSubmit={submitUser}><label>姓名<input name="name" defaultValue={item?.name} maxLength={50} required/></label><label>登录邮箱<input name="email" type="email" defaultValue={item?.email} disabled={Boolean(item)} required/></label><div className="field-row"><label>岗位<select name="role" defaultValue={item?.role??'employee'}>{(['employee','manager','finance','owner','cashier','super_admin'] as Role[]).map((role)=><option key={role} value={role}>{roleNames[role]}</option>)}</select></label>{item?<label>账号状态<select name="status" defaultValue={item.status}><option value="active">正常</option><option value="disabled">停用</option></select></label>:null}</div><div className="form-tip">岗位决定可处理的审批环节；超级管理员拥有全部权限。</div><FormActions/></form></Modal>}
+    if(modal.type==='user'){const item=modal.item;const roleOptions=item?.role==='super_admin'?[...assignableRoles,'super_admin' as Role]:assignableRoles;return <Modal title={item?'修改人员权限':'添加员工'} subtitle="员工使用这里填写的邮箱登录"><form onSubmit={submitUser}><label>姓名<input name="name" defaultValue={item?.name} maxLength={50} required/></label><label>登录邮箱<input name="email" type="email" defaultValue={item?.email} disabled={Boolean(item)} required/></label><div className="field-row"><label>岗位<select name="role" defaultValue={item?.role??'employee'}>{roleOptions.map((role)=><option key={role} value={role}>{roleNames[role]}</option>)}</select></label>{item?<label>账号状态<select name="status" defaultValue={item.status}><option value="active">正常</option><option value="disabled">停用</option></select></label>:null}</div><div className="form-tip">新员工初始密码统一为 123456，首次登录必须修改；岗位决定审批权限。</div><FormActions/></form></Modal>}
     if(modal.type==='approval'){return <Modal title={modal.action==='approve'?'通过审批':'驳回单据'} subtitle={`${modal.item.subject} · ${money(modal.item.amount)}`}><form onSubmit={submitApproval}><div className="approval-summary"><span>当前环节</span><strong>{modal.item.status}</strong><span>往来单位</span><strong>{modal.item.counterparty}</strong></div><label>审批意见<textarea name="comment" rows={4} maxLength={300} placeholder={modal.action==='approve'?'可填写通过说明':'请填写驳回原因'} required={modal.action==='reject'}/></label><FormActions submitText={modal.action==='approve'?'确认通过':'确认驳回'} danger={modal.action==='reject'}/></form></Modal>}
     const item=modal.item; const files=appData.attachments.filter((a)=>a.transactionId===item.id); const history=appData.approvals.filter((a)=>a.transactionId===item.id);
     return <Modal title="单据详情" subtitle={item.id} wide><div className="detail-grid"><div><div className="detail-amount"><span>{item.type==='income'?'收款':'付款 / 报销'}</span><strong className={item.type==='income'?'amount-in':'amount-out'}>{money(item.amount)}</strong><Status value={item.status}/></div><dl className="detail-list"><div><dt>业务事项</dt><dd>{item.subject}</dd></div><div><dt>往来单位 / 人员</dt><dd>{item.counterparty}</dd></div><div><dt>创建时间</dt><dd>{dateText(item.createdAt)}</dd></div><div><dt>说明</dt><dd>{item.note||'—'}</dd></div></dl><h3>附件</h3><form className="upload-box" onSubmit={(event)=>void uploadAttachment(event,item)}><input name="file" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx" required/><button disabled={busy}>上传</button><small>图片、PDF、Word、Excel，单个不超过 20MB</small></form><div className="attachment-list">{files.map((file)=><div key={file.id}><span>▧</span><a href={`/api/attachments?id=${encodeURIComponent(file.id)}`}>{file.filename}</a><small>{(file.size/1024).toFixed(1)} KB</small>{isAdmin||appUser.role==='finance'?<button onClick={()=>void removeAttachment(file,item)}>删除</button>:null}</div>)}{files.length===0?<p className="muted">暂无附件</p>:null}</div></div><div><h3>审批记录</h3><div className="timeline">{history.map((record)=><div key={record.id}><i className={record.action}/><span><strong>{record.stage}</strong><small>{record.actorName} · {dateText(record.createdAt)}</small>{record.comment?<p>{record.comment}</p>:null}</span></div>)}</div></div></div><div className="modal-actions"><button onClick={()=>setModal(null)}>关闭</button>{canApprove(item)?<button className="submit-button" onClick={()=>setModal({type:'approval',item,action:'approve'})}>处理审批</button>:null}</div></Modal>;
